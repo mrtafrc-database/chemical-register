@@ -25,7 +25,7 @@ export default function NewRequest(){
   try{const data={...form,requestQuantity:Number(form.requestQuantity),unit:selected?.issue_unit||form.unit,itemMasterId:selected?.id||null,itemMasterRevision:selected?.revision??null,itemNo:selected?.item_no||'',itemDescription:selected?.description||''};
    if(!Number.isFinite(data.requestQuantity)||data.requestQuantity<=0)throw new Error('ปริมาณต้องเป็นตัวเลขมากกว่า 0');
    const payload=JSON.stringify(data);if(operation.current?.payload!==payload)operation.current={payload,key:crypto.randomUUID()};
-   const r=await post('/requests',data,operation.current.key);window.location.assign(`${BASE_PATH}/requests/view/?id=${encodeURIComponent(r.request.id)}`);
+   await post('/requests',data,operation.current.key);window.location.assign(`${BASE_PATH}/dashboard/`);
   }catch(e){setError(e instanceof Error?e.message:'Unable to submit');}finally{lock.current=false;setBusy(false);}
  }
  const allowed=user?.roles.some(r=>['REQUESTOR','ADMIN'].includes(r)),existing=form.declaredType==='EXISTING';
