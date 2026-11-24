@@ -13,7 +13,8 @@ const num=(b:Record<string,unknown>,key:string,positive=false):number=>{const v=
 const enumValue=(b:Record<string,unknown>,key:string,values:string[]):string=>{const v=text(b,key,80);if(!values.includes(v))fail(400,`Invalid ${key}`);return v;};
 function has(u:User,...roles:string[]){return roles.some(r=>u.roles.includes(r));}
 function privileged(u:User){return has(u,'ADMIN','STORE','SAFETY');}
-function visible(u:User,r:Chemical){return privileged(u)||r.requestor_id===u.id;}
+function sectionEditor(u:User,r:Chemical){return has(u,'ADMIN')||(has(u,'REQUESTOR')&&!!u.section_id&&u.section_id===r.section_id);}
+function visible(u:User,r:Chemical){return privileged(u)||r.requestor_id===u.id||(r.declared_type==='EXISTING'&&sectionEditor(u,r));}
 const closed=(r:Chemical)=>['APPROVED_FOR_PURCHASE','REJECTED','CANCELLED'].includes(r.status);
 async function authenticate(req:Request,env:Env):Promise<User>{
  const bearer=req.headers.get('Authorization')||'';
@@ -87,10 +88,16 @@ async function mutate(req:Request,env:Env,u:User,path:string,id?:string,action?:
   target=r.status;
   if(action==='store-review'){
    if(!has(u,'STORE','ADMIN'))fail(403,'Store role required');if(!['SUBMITTED','PENDING_STORE_REVIEW'].includes(r.status)||r.declared_type!=='EXISTING')fail(409,'Request is not waiting for Store review');
-   const current=num(b,'currentStock'),result=enumValue(b,'result',['WITHIN_LIMIT','EXCEEDS_LIMIT']),remark=text(b,'remark',2000,true);
-   if(result==='EXCEEDS_LIMIT'&&!remark)fail(400,'Explain why the limit is exceeded');
-   target=result==='EXCEEDS_LIMIT'?'RETURNED_FOR_DOCUMENTS':'PENDING_SAFETY_REVIEW';auditAction='STORE_REVIEWED';set('store_review_status',result);set('safety_review_status',result==='EXCEEDS_LIMIT'?'RETURNED':'PENDING_REVIEW');
-   statements.push(stmt('INSERT INTO store_reviews(id,request_id,reviewer_id,current_stock,request_quantity,result,remark) VALUES (?,?,?,?,?,?,?)',uuid(),id,u.id,current,r.request_quantity,result,remark));
+   const current=num(b,'currentStock'),limit=num(b,'approvedLimit'),remark=text(b,'remark',2000,true),limitUnit=text(b,'limitUnit',40);
+   if(limitUnit!==r.unit)fail(400,'Stock, purchase quantity and limit must use the same Issue Unit; no unit conversion is performed');
+   const total=current+r.request_quantity;if(!Number.isFinite(total)||total>1e12)fail(400,'Total quantity is too large');
+   const result=total<=limit?'WITHIN_LIMIT':'EXCEEDS_LIMIT';
+   if(b.result!==undefined&&b.result!==result)fail(400,'Result does not match stock plus purchase compared with the limit');
+   if(result==='EXCEEDS_LIMIT'&&!remark)fail(400,'Over Limit requires a comment: reduce purchase quantity or request storage expansion');
+   target=result==='EXCEEDS_LIMIT'?'RETURNED_FOR_DOCUMENTS':'APPROVED_FOR_PURCHASE';auditAction='STORE_REVIEWED';set('store_review_status',result);
+   next.current_stock=current;next.request_quantity=r.request_quantity;next.total_after_purchase=total;next.approved_limit=limit;next.limit_unit=limitUnit;
+   // maximum_stock retains the original generated current_stock + request_quantity formula.
+   statements.push(stmt('INSERT INTO store_reviews(id,request_id,reviewer_id,current_stock,request_quantity,result,remark,approved_limit,limit_unit) VALUES (?,?,?,?,?,?,?,?,?)',uuid(),id,u.id,current,r.request_quantity,result,remark,limit,limitUnit));
   }else if(action==='safety-review'){
    if(!has(u,'SAFETY','ADMIN'))fail(403,'Safety role required');if(r.status!=='PENDING_SAFETY_REVIEW')fail(409,'Request is not waiting for Safety review');
    const a=enumValue(b,'action',['REVIEW','RETURN_FOR_DOCUMENTS','APPROVE','REJECT']),comment=text(b,'comment',2000,true);
@@ -121,9 +128,18 @@ async function mutate(req:Request,env:Env,u:User,path:string,id?:string,action?:
    target=result==='APPROVED'?'PENDING_SAFETY_REVIEW':'REJECTED';if(result==='REJECTED')set('safety_review_status','REJECTED');auditAction='CUSTOMER_'+result;
    statements.push(stmt('INSERT INTO customer_approvals(id,request_id,handled_by,result,customer_reference,comment,responded_at,created_at) VALUES (?,?,?,?,?,?,?,?)',uuid(),id,u.id,result,reference,comment,now,now));
   }else if(action==='resubmit'){
-   if(r.requestor_id!==u.id&&!has(u,'ADMIN'))fail(403,'Only the Requestor can resubmit');if(r.status!=='RETURNED_FOR_DOCUMENTS')fail(409,'Not returned for documents');
-   const docs=await stmt("SELECT id FROM request_documents WHERE request_id=? AND is_active=1 AND document_type='SDS'",id).first();if(!docs)fail(409,'An active SDS is required; document upload is not enabled in this release');
-   target=r.declared_type==='EXISTING'?'PENDING_STORE_REVIEW':'PENDING_SAFETY_REVIEW';set('store_review_status',r.declared_type==='EXISTING'?'PENDING_REVIEW':'NOT_REQUIRED');set('safety_review_status','PENDING_REVIEW');auditAction='REQUEST_RESUBMITTED';
+   if(r.declared_type==='EXISTING'&&r.store_review_status==='EXCEEDS_LIMIT'){
+    if(!sectionEditor(u,r))fail(403,'A Requestor in this Section or Admin is required to revise and resubmit');
+    if(r.status!=='RETURNED_FOR_DOCUMENTS')fail(409,'Request is not returned by Store');
+    if(Object.keys(b).some(k=>!['revision','requestQuantity','reason'].includes(k)))fail(400,'Only purchase quantity and reason may be edited in this step');
+    const quantity=num(b,'requestQuantity',true);text(b,'reason',2000);
+    if(quantity>=r.request_quantity)fail(400,'Reduce purchase quantity for this step; quantity or storage expansion is not enabled yet');
+    set('request_quantity',quantity);target='PENDING_STORE_REVIEW';set('store_review_status','PENDING_REVIEW');auditAction='REQUEST_QUANTITY_REVISED_AND_RESUBMITTED';
+   }else{
+    if(r.requestor_id!==u.id&&!has(u,'ADMIN'))fail(403,'Only the Requestor can resubmit');if(r.status!=='RETURNED_FOR_DOCUMENTS')fail(409,'Not returned for documents');
+    const docs=await stmt("SELECT id FROM request_documents WHERE request_id=? AND is_active=1 AND document_type='SDS'",id).first();if(!docs)fail(409,'An active SDS is required; document upload is not enabled in this release');
+    target=r.declared_type==='EXISTING'?'PENDING_STORE_REVIEW':'PENDING_SAFETY_REVIEW';set('store_review_status',r.declared_type==='EXISTING'?'PENDING_REVIEW':'NOT_REQUIRED');set('safety_review_status','PENDING_REVIEW');auditAction='REQUEST_RESUBMITTED';
+   }
   }else if(action==='cancel'){
    if(r.requestor_id!==u.id&&!has(u,'ADMIN'))fail(403,'Only the Requestor can cancel');const reason=text(b,'reason',2000);target='CANCELLED';set('cancellation_reason',reason);set('cancelled_at',now);auditAction='REQUEST_CANCELLED';
   }else fail(404,'Action not found');
@@ -132,12 +148,12 @@ async function mutate(req:Request,env:Env,u:User,path:string,id?:string,action?:
   statements.unshift(stmt(`UPDATE chemical_requests SET ${sets.join(',')} WHERE id=? AND revision=? AND status=?`,...values),stmt('INSERT INTO workflow_tx_guards(id,success) VALUES (?,changes())',uuid()));
  }
  const notice='Request status: '+target!;
- statements.push(stmt('INSERT INTO audit_logs(id,request_id,actor_id,action,entity_type,entity_id,old_values,new_values,reason) VALUES (?,?,?,?,?,?,?,?,?)',uuid(),requestId,u.id,auditAction!,'chemical_requests',requestId,r?JSON.stringify({status:r.status,revision:r.revision}):null,JSON.stringify(next),String(b.remark||b.comment||b.reason||'')||null));
+ statements.push(stmt('INSERT INTO audit_logs(id,request_id,actor_id,action,entity_type,entity_id,old_values,new_values,reason) VALUES (?,?,?,?,?,?,?,?,?)',uuid(),requestId,u.id,auditAction!,'chemical_requests',requestId,r?JSON.stringify({status:r.status,revision:r.revision,request_quantity:r.request_quantity,store_review_status:r.store_review_status}):null,JSON.stringify(next),String(b.remark||b.comment||b.reason||'')||null));
  // In-app notification only. No emails are sent in this release.
  statements.push(stmt(`INSERT INTO notifications(id,user_id,request_id,channel,title,message)
  SELECT ? || '-' || u.id,u.id,?,'IN_APP',?,? FROM users u WHERE u.is_active=1 AND
- (u.id=(SELECT requestor_id FROM chemical_requests WHERE id=?) OR EXISTS
- (SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id=ur.role_id WHERE ur.user_id=u.id AND ro.role_code=?))`,uuid(),requestId,'Chemical Register',notice,requestId,target === 'PENDING_STORE_REVIEW'?'STORE':(['PENDING_SAFETY_REVIEW','PENDING_CUSTOMER_APPROVAL'].includes(target!)?'SAFETY':'__NONE__')));
+ (u.id=(SELECT requestor_id FROM chemical_requests WHERE id=?) OR (EXISTS(SELECT 1 FROM chemical_requests cr WHERE cr.id=? AND cr.declared_type='EXISTING' AND cr.section_id=u.section_id) AND EXISTS(SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id=ur.role_id WHERE ur.user_id=u.id AND ro.role_code='REQUESTOR')) OR EXISTS
+ (SELECT 1 FROM user_roles ur JOIN roles ro ON ro.id=ur.role_id WHERE ur.user_id=u.id AND ro.role_code=?))`,uuid(),requestId,'Chemical Register',notice,requestId,requestId,target === 'PENDING_STORE_REVIEW'?'STORE':(['PENDING_SAFETY_REVIEW','PENDING_CUSTOMER_APPROVAL'].includes(target!)?'SAFETY':'__NONE__')));
  statements.unshift(stmt('INSERT INTO workflow_operations(id,actor_id,request_id,payload_hash) VALUES (?,?,?,?)',key,u.id,requestId,hash));
  statements.push(stmt('DELETE FROM workflow_tx_guards'));
  try{await env.DB.batch(statements);}catch{const saved=await replay(env,key,u,hash);if(saved)return saved;fail(409,'The operation could not be saved. Refresh and retry; no partial changes were committed');}
@@ -282,7 +298,7 @@ export default {async fetch(req:Request,env:Env):Promise<Response>{
   if(req.method==='GET'&&path==='/sections'){const rows=await env.DB.prepare('SELECT id,section_code,section_name FROM sections WHERE is_active=1 ORDER BY section_code').all();return send({success:true,sections:rows.results});}
   if(req.method==='GET'&&path==='/requests'){
    const page=Math.max(1,Math.min(100000,Number(url.searchParams.get('page'))||1));if(!Number.isInteger(page))fail(400,'Invalid page');
-   const where=privileged(u)?'1=1':'cr.requestor_id=?',args=privileged(u)?[]:[u.id];
+   const where=privileged(u)?'1=1':has(u,'REQUESTOR')?"(cr.requestor_id=? OR (cr.declared_type='EXISTING' AND cr.section_id=?))":'cr.requestor_id=?',args=privileged(u)?[]:has(u,'REQUESTOR')?[u.id,u.section_id]:[u.id];
    const rows=await env.DB.prepare(`SELECT cr.*,s.section_code,u.display_name requestor_name FROM chemical_requests cr JOIN sections s ON s.id=cr.section_id JOIN users u ON u.id=cr.requestor_id WHERE ${where} ORDER BY cr.submitted_at DESC,cr.id DESC LIMIT 50 OFFSET ?`).bind(...args,(page-1)*50).all();
    const total=await env.DB.prepare(`SELECT COUNT(*) total FROM chemical_requests cr WHERE ${where}`).bind(...args).first();return send({success:true,requests:rows.results,total,page});
   }
