@@ -1,146 +1,18 @@
-
-"use client";
-
-import { useEffect, useState } from "react";
-
-const API_URL = "https://chemical-register-api.mrtafrc.workers.dev";
-
-type User = {
-  username: string;
-  displayName: string;
-  sectionId: string | null;
-  roles: string[];
-};
-
-export default function DashboardPage() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    async function checkSession() {
-      const token = sessionStorage.getItem(
-        "chemical_register_token"
-      );
-
-      if (!token) {
-        window.location.href = "../";
-        return;
-      }
-
-      try {
-        const response = await fetch(`${API_URL}/me`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        });
-
-        const result = await response.json();
-
-        if (!response.ok || !result.success) {
-          sessionStorage.removeItem("chemical_register_token");
-          window.location.href = "../";
-          return;
-        }
-
-        setUser(result.user);
-      } catch {
-        alert("Unable to connect to the server.");
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    checkSession();
-  }, []);
-
-  async function handleLogout() {
-    const token = sessionStorage.getItem(
-      "chemical_register_token"
-    );
-
-    try {
-      if (token) {
-        await fetch(`${API_URL}/logout`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        });
-      }
-    } finally {
-      sessionStorage.removeItem("chemical_register_token");
-      window.location.href = "../";
-    }
-  }
-
-  if (loading) {
-    return <main style={pageStyle}>Checking session...</main>;
-  }
-
-  if (!user) {
-    return <main style={pageStyle}>Unable to load user information.</main>;
-  }
-
-  return (
-    <main style={pageStyle}>
-      <header style={headerStyle}>
-        <strong>Chemical Register</strong>
-        <button onClick={handleLogout} style={logoutStyle}>
-          Sign Out
-        </button>
-      </header>
-
-      <section style={{ padding: "32px" }}>
-        <h1 style={{ color: "#263746" }}>
-          Dashboard
-        </h1>
-
-        <p>Welcome, {user.displayName}</p>
-
-        <div style={cardStyle}>
-          <p><strong>Username:</strong> {user.username}</p>
-          <p><strong>Section:</strong> {user.sectionId || "Not assigned"}</p>
-          <p><strong>Role:</strong> {user.roles.join(", ")}</p>
-        </div>
-
-        {user.roles.includes("ADMIN") && (
-          <p style={{ color: "#008f83" }}>
-            Administrator access
-          </p>
-        )}
-      </section>
-    </main>
-  );
+'use client';
+import {useEffect,useState} from 'react';
+import Shell,{useProfile,Badge} from '../../components/Shell';
+import {api} from '../../lib/api';
+import {BASE_PATH} from '../../lib/config';
+import {Chemical,statuses,dateText} from '../../lib/types';
+export default function Dashboard(){
+ const {user,error:profileError}=useProfile();const [rows,setRows]=useState<Chemical[]>([]),[error,setError]=useState(''),[loading,setLoading]=useState(false),[page,setPage]=useState(1),[total,setTotal]=useState(0),[search,setSearch]=useState(''),[status,setStatus]=useState('');
+ async function load(){setLoading(true);setError('');try{const r=await api(`/requests?page=${page}`);setRows(r.requests);setTotal(r.total.total);}catch(e){setError(e instanceof Error?e.message:'Unable to load requests');}finally{setLoading(false);}}
+ useEffect(()=>{if(user)void load();},[user,page]);
+ const filtered=rows.filter(r=>(!status||r.status===status)&&`${r.running_number} ${r.chemical_name} ${r.item_no} ${r.item_description}`.toLowerCase().includes(search.toLowerCase()));
+ const ownRoles=user?.roles||[];return <Shell user={user}><div className="toolbar"><div><h1>Dashboard</h1><div className="muted">{user?`${user.displayName} · ${ownRoles.join(', ')} · ${user.sectionId||'No section'}`:'Checking session...'}</div></div><div className="actions">{ownRoles.some(x=>['REQUESTOR','ADMIN'].includes(x))&&<a className="button primary" href={`${BASE_PATH}/requests/new/`}>+ New Request</a>}<button onClick={load} disabled={loading||!user}>Refresh</button></div></div>
+ {(profileError||error)&&<div role="alert" className="error">{profileError||error}</div>}
+ <div className="stats"><div className="stat"><span className="muted">คำขอทั้งหมดที่คุณมีสิทธิ์ดู</span><strong>{total}</strong></div><div className="stat"><span className="muted">รอตรวจ — ในหน้านี้</span><strong>{rows.filter(r=>r.status.startsWith('PENDING_')).length}</strong></div><div className="stat"><span className="muted">Returned — ในหน้านี้</span><strong>{rows.filter(r=>r.status==='RETURNED_FOR_DOCUMENTS').length}</strong></div></div>
+ <section className="card"><h2>Chemical Requests</h2><div className="filters"><input aria-label="ค้นหาในหน้านี้" placeholder="ค้นหาเลขคำขอ / สารเคมี / Item ในหน้านี้" value={search} onChange={e=>setSearch(e.target.value)}/><select aria-label="สถานะ" value={status} onChange={e=>setStatus(e.target.value)}><option value="">All statuses — current page</option>{Object.entries(statuses).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></div>
+ <div className="scroll"><table><thead><tr><th>Request No.</th><th>Chemical / Item</th><th>Section</th><th>Quantity</th><th>Status</th><th>Submitted</th></tr></thead><tbody>{filtered.map(r=><tr key={r.id}><td><a className="rowlink" href={`${BASE_PATH}/requests/view/?id=${encodeURIComponent(r.id)}`}>{r.running_number}</a><div className="muted">{r.requestor_name}</div></td><td>{r.chemical_name}<div className="muted">{r.item_no} · {r.item_description}</div></td><td>{r.section_code}</td><td>{r.request_quantity} {r.unit}</td><td><Badge status={r.status}/></td><td>{dateText(r.submitted_at)}</td></tr>)}{!filtered.length&&<tr><td colSpan={6}>{loading?'Loading...':'ไม่มีคำขอในหน้านี้'}</td></tr>}</tbody></table></div><div className="toolbar" style={{marginTop:18,marginBottom:0}}><span className="muted">หน้า {page} · สูงสุด 50 รายการต่อหน้า · ตัวกรองใช้เฉพาะหน้านี้</span><div><button disabled={page===1||loading} onClick={()=>setPage(p=>p-1)}>Previous</button>{' '}<button disabled={page*50>=total||loading} onClick={()=>setPage(p=>p+1)}>Next</button></div></div></section>
+ <div className="notice">Development release: เอกสารแนบและการส่งอีเมลยังไม่เปิดใช้งาน เก็บคำขอและประวัติการตรวจใน D1 เท่านั้น ใช้ข้อมูลทดสอบก่อน</div></Shell>;
 }
-
-const pageStyle: React.CSSProperties = {
-  minHeight: "100vh",
-  background: "#f3f7f7",
-  fontFamily: "Arial, sans-serif",
-  color: "#344054"
-};
-
-const headerStyle: React.CSSProperties = {
-  background: "#ffffff",
-  padding: "18px 28px",
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  borderBottom: "1px solid #e5e7eb"
-};
-
-const logoutStyle: React.CSSProperties = {
-  background: "#ffffff",
-  border: "1px solid #d0d5dd",
-  borderRadius: "6px",
-  padding: "9px 16px",
-  cursor: "pointer"
-};
-
-const cardStyle: React.CSSProperties = {
-  background: "#ffffff",
-  borderRadius: "12px",
-  padding: "20px",
-  maxWidth: "500px",
-  boxShadow: "0 2px 8px rgba(0,0,0,0.04)"
-};
