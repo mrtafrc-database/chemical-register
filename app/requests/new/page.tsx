@@ -5,6 +5,7 @@ import {api,post} from '../../../lib/api';
 import {BASE_PATH} from '../../../lib/config';
 import type {Section} from '../../../lib/types';
 type Item={id:string;item_no:string;description:string;issue_unit:string;revision:number;chemical_scope:string};
+const ISSUE_UNITS=[['SET', 'Set'], ['KG', 'Kilogram'], ['PC', 'Piece'], ['L', 'Litre'], ['BOT', 'Bottle'], ['CAN', 'Canister'], ['PAC', 'Packet'], ['BAG', 'Bag'], ['GAL', 'US gallon'], ['DR', 'Drum'], ['EA', 'Each']] as const;
 export default function NewRequest(){
  const {user,error:profileError}=useProfile();
  const [sections,setSections]=useState<Section[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -23,13 +24,14 @@ export default function NewRequest(){
  async function submit(e:React.FormEvent){e.preventDefault();if(lock.current)return;if(form.declaredType==='EXISTING'&&!selected){setError('กรุณาค้นหาและเลือก Item จาก Item Master ก่อน');return;}
   lock.current=true;setBusy(true);setError('');
   try{const data={...form,requestQuantity:Number(form.requestQuantity),unit:selected?.issue_unit||form.unit,itemMasterId:selected?.id||null,itemMasterRevision:selected?.revision??null,itemNo:selected?.item_no||'',itemDescription:selected?.description||''};
+   if(form.declaredType==='NEW'&&!ISSUE_UNITS.some(([code])=>code===data.unit))throw new Error('กรุณาเลือก Issue Unit จากรายการ');
    if(!Number.isFinite(data.requestQuantity)||data.requestQuantity<=0)throw new Error('ปริมาณต้องเป็นตัวเลขมากกว่า 0');
    const payload=JSON.stringify(data);if(operation.current?.payload!==payload)operation.current={payload,key:crypto.randomUUID()};
    await post('/requests',data,operation.current.key);window.location.assign(`${BASE_PATH}/dashboard/`);
   }catch(e){setError(e instanceof Error?e.message:'Unable to submit');}finally{lock.current=false;setBusy(false);}
  }
  const allowed=user?.roles.some(r=>['REQUESTOR','ADMIN'].includes(r)),existing=form.declaredType==='EXISTING';
- return <Shell user={user}><div className="toolbar"><div><h1>New Chemical Request — Dashboard v2</h1><span className="muted">ระบบสร้างเลขคำขออัตโนมัติเมื่อบันทึกสำเร็จ</span></div><a className="button" href={`${BASE_PATH}/dashboard/`}>Back</a></div>
+ return <Shell user={user}><div className="toolbar"><div><h1>New Chemical Request</h1><span className="muted">ระบบสร้างเลขคำขออัตโนมัติเมื่อบันทึกสำเร็จ · Unit dropdown v3</span></div><a className="button" href={`${BASE_PATH}/dashboard/`}>Back</a></div>
  {(profileError||error)&&<div role="alert" className="error">{profileError||error}</div>}
  {user&&!allowed?<div className="notice">ต้องมีสิทธิ์ Requestor หรือ Admin เพื่อสร้างคำขอ</div>:<form onSubmit={submit} className="card"><fieldset disabled={busy||!user||!allowed||!!user?.mustChangePassword} style={{border:0,padding:0}}><div className="grid">
  <div><label htmlFor="section">Section</label><select id="section" required value={form.sectionId} onChange={e=>change('sectionId',e.target.value)} disabled={!user?.roles.includes('ADMIN')}><option value="">Select Section</option>{sections.map(s=><option key={s.id} value={s.id}>{s.section_code} — {s.section_name}</option>)}</select></div>
@@ -44,7 +46,7 @@ export default function NewRequest(){
  <div className="full"><label htmlFor="chemicalName">ชื่อสารเคมี / Chemical Name</label><input id="chemicalName" required maxLength={300} value={form.chemicalName} onChange={e=>change('chemicalName',e.target.value)}/></div>
  <div className="full"><label htmlFor="purpose">วัตถุประสงค์การใช้ / Purpose</label><textarea id="purpose" required maxLength={2000} value={form.purpose} onChange={e=>change('purpose',e.target.value)}/></div>
  <div><label htmlFor="quantity">Request Quantity</label><input id="quantity" type="number" step="any" min="0.000000001" max="1000000000000" required value={form.requestQuantity} onChange={e=>change('requestQuantity',e.target.value)}/></div>
- <div><label htmlFor="unit">Unit {existing?'— จาก Master':''}</label><input id="unit" required maxLength={40} readOnly={existing} value={existing?selected?.issue_unit||'':form.unit} onChange={e=>change('unit',e.target.value)}/></div>
+ <div><label htmlFor="unit">Unit {existing?'— จาก Master':''}</label>{existing?<input id="unit" required readOnly value={selected?.issue_unit||''}/>:<select id="unit" required value={form.unit} onChange={e=>change('unit',e.target.value)}><option value="">เลือกหน่วย / Select Issue Unit</option>{ISSUE_UNITS.map(([code,name])=><option key={code} value={code}>{code} — {name}</option>)}</select>}</div>
  </div></fieldset>
  <div className="notice" style={{marginTop:20}}>Existing ต้องเลือก Item เดิมจาก Master · New ต้องกรอกชื่อสารเคมี ไม่ต้องมี Item<br/>คำขอเก็บสำเนา Item ณ เวลาส่ง ไม่เปลี่ยนตาม Master ภายหลัง<br/>รุ่นนี้คง Workflow เดิม Existing → Store Review / New → Safety Review ยังไม่รวมการแนบเอกสารและ Workflow 5 ประเภทเต็มรูปแบบ</div>
  <div className="actions"><button className="primary" disabled={busy||!user||!allowed||!!user?.mustChangePassword||(existing&&!selected)}>{busy?'Submitting...':'Submit Request'}</button><a className="button" href={`${BASE_PATH}/dashboard/`}>Cancel</a></div></form>}</Shell>;
