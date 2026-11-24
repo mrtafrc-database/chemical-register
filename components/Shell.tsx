@@ -8,7 +8,10 @@ export function useProfile(){
  useEffect(()=>{let active=true;api('/profile').then(r=>{if(active)setUser(r.user);}).catch(e=>{if(active)setError(e.message);});return()=>{active=false;};},[]);
  return {user,error};
 }
-export function Badge({status}:{status:string}){return <span className={`badge ${status==='RETURNED_FOR_DOCUMENTS'?'returned':['CANCELLED','REJECTED'].includes(status)?'closed':''}`}>{status.replaceAll('_',' ')}</span>;}
+export function Badge({status}:{status:string}){
+ const approved=status==='APPROVED_FOR_PURCHASE';
+ return <span className={`badge ${status==='RETURNED_FOR_DOCUMENTS'?'returned':['CANCELLED','REJECTED'].includes(status)?'closed':''}`} style={approved?{backgroundColor:'#15803D',color:'#FFFFFF',border:'1px solid #166534',fontWeight:700,padding:'5px 10px'}:undefined}>{status.replaceAll('_',' ')}</span>;
+}
 export default function Shell({user,children}:{user:User|null;children:React.ReactNode}){
  const [busy,setBusy]=useState(false);
  async function logout(){setBusy(true);try{const token=sessionStorage.getItem('chemical_register_token');if(token)await fetch(`${AUTH_API_URL}/logout`,{method:'POST',headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(8000)});}catch{}finally{sessionStorage.removeItem('chemical_register_token');signIn();}}
