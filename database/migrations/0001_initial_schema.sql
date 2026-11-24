@@ -82,7 +82,7 @@ CREATE TABLE running_sequences (
     CHECK (last_value >= 0)
 );
 
-INSERT INTO running_sequences (sequence_key, last_value)
+INSERT OR IGNORE INTO running_sequences (sequence_key, last_value)
 VALUES ('chemical_request', 0);
 
 -- 8. CHEMICAL REQUESTS
@@ -302,3 +302,16 @@ CREATE TABLE notifications (
 
 CREATE INDEX idx_notifications_user
 ON notifications(user_id, is_read, created_at);
+
+-- Prevent modification of audit history
+CREATE TRIGGER prevent_audit_logs_update
+BEFORE UPDATE ON audit_logs
+BEGIN
+  SELECT RAISE(ABORT, 'Audit logs cannot be updated');
+END;
+
+CREATE TRIGGER prevent_audit_logs_delete
+BEFORE DELETE ON audit_logs
+BEGIN
+  SELECT RAISE(ABORT, 'Audit logs cannot be deleted');
+END;
