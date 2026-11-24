@@ -29,7 +29,7 @@ export default function NewRequest(){
   }catch(e){setError(e instanceof Error?e.message:'Unable to submit');}finally{lock.current=false;setBusy(false);}
  }
  const allowed=user?.roles.some(r=>['REQUESTOR','ADMIN'].includes(r)),existing=form.declaredType==='EXISTING';
- return <Shell user={user}><div className="toolbar"><div><h1>New Chemical Request</h1><span className="muted">ระบบสร้างเลขคำขออัตโนมัติเมื่อบันทึกสำเร็จ</span></div><a className="button" href={`${BASE_PATH}/dashboard/`}>Back</a></div>
+ return <Shell user={user}><div className="toolbar"><div><h1>New Chemical Request — Dashboard v2</h1><span className="muted">ระบบสร้างเลขคำขออัตโนมัติเมื่อบันทึกสำเร็จ</span></div><a className="button" href={`${BASE_PATH}/dashboard/`}>Back</a></div>
  {(profileError||error)&&<div role="alert" className="error">{profileError||error}</div>}
  {user&&!allowed?<div className="notice">ต้องมีสิทธิ์ Requestor หรือ Admin เพื่อสร้างคำขอ</div>:<form onSubmit={submit} className="card"><fieldset disabled={busy||!user||!allowed||!!user?.mustChangePassword} style={{border:0,padding:0}}><div className="grid">
  <div><label htmlFor="section">Section</label><select id="section" required value={form.sectionId} onChange={e=>change('sectionId',e.target.value)} disabled={!user?.roles.includes('ADMIN')}><option value="">Select Section</option>{sections.map(s=><option key={s.id} value={s.id}>{s.section_code} — {s.section_name}</option>)}</select></div>
