@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 
-const API_URL = "https://chemical-register-api.mrtafrc.workers.dev";
+import {AUTH_API_URL as API_URL, BASE_PATH} from "../lib/config";
 
 export default function LoginPage() {
   const [username, setUsername] = useState("");
@@ -36,7 +36,7 @@ export default function LoginPage() {
         result.token
       );
 
-      window.location.href = "./dashboard";
+      window.location.href = `${BASE_PATH}/dashboard/`;
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unable to connect"
