@@ -57,14 +57,29 @@ async function mutate(req:Request,env:Env,u:User,path:string,id?:string,action?:
   const sectionId=has(u,'ADMIN')?text(b,'sectionId',100):u.section_id;if(!sectionId)fail(400,'A section must be assigned');
   const section=await stmt('SELECT id FROM sections WHERE id=? AND is_active=1',sectionId).first();if(!section)fail(400,'Section is not active');
   const declared=enumValue(b,'declaredType',['EXISTING','NEW']);const quantity=num(b,'requestQuantity',true);
-  const itemNo=text(b,'itemNo',100),description=text(b,'itemDescription',1000),chemical=text(b,'chemicalName',300),purpose=text(b,'purpose',2000),unit=text(b,'unit',40);
+  const chemical=text(b,'chemicalName',300),purpose=text(b,'purpose',2000);
+  let itemNo='',description='',unit=declared==='NEW'?text(b,'unit',40):'',masterId:string|null=null,snapshot:string|null=null;
+  if(declared==='NEW'){
+   if(b.itemMasterId!=null&&b.itemMasterId!=='')fail(400,'New Chemical must not select an existing Item');
+   if(text(b,'itemNo',100,true)||text(b,'itemDescription',2000,true))fail(400,'New Chemical leaves Item and Item Description blank');
+  }else{
+   masterId=text(b,'itemMasterId',100);
+   const master=await readMaster(env,masterId);
+   if(master.is_active!==1||master.chemical_scope==='NON_CHEMICAL')fail(409,'Selected Item is disabled or marked non-chemical');
+   if(typeof b.itemMasterRevision!=='number'||!Number.isInteger(b.itemMasterRevision)||b.itemMasterRevision!==master.revision)fail(409,'Item changed after selection; select it again');
+   itemNo=master.item_no;description=String(master.description);unit=String(master.issue_unit);
+   if(itemNo.length>100||description.length>2000||!unit||unit.length>40)fail(400,'Master description or unit is invalid for a request; ask Admin to correct it');
+   // Do not trust client-supplied Item/Description/Unit. Snapshot the complete validated master.
+   snapshot=JSON.stringify({...master,source_data:JSON.parse(master.source_data),captured_at:now});
+   const guard=uuid();statements.push(stmt('INSERT INTO workflow_tx_guards(id,success) SELECT ?,CASE WHEN EXISTS(SELECT 1 FROM item_master WHERE id=? AND revision=? AND is_active=1 AND chemical_scope<>?) THEN 1 ELSE 0 END',guard,masterId,master.revision,'NON_CHEMICAL'));
+  }
   target=declared==='EXISTING'?'PENDING_STORE_REVIEW':'PENDING_SAFETY_REVIEW';auditAction='REQUEST_SUBMITTED';
-  next={status:target,declared_type:declared,request_quantity:quantity};
+  next={status:target,declared_type:declared,request_quantity:quantity,item_master_id:masterId,item_no:itemNo,item_description:description,unit,chemical_name:chemical};
   statements.push(stmt("UPDATE running_sequences SET last_value=last_value+1 WHERE sequence_key='chemical_request'"));
   statements.push(stmt('INSERT INTO workflow_tx_guards(id,success) VALUES (?,changes())',uuid()));
   const year=new Date().getUTCFullYear();
-  statements.push(stmt(`INSERT INTO chemical_requests(id,running_number,running_year,running_sequence,section_id,requestor_id,item_no,item_description,chemical_name,purpose,request_quantity,unit,declared_type,status,store_review_status,revision)
-   SELECT ?,printf('CR-%d-%06d',?,last_value),?,last_value,?,?,?,?,?,?,?,?,?,?,?,0 FROM running_sequences WHERE sequence_key='chemical_request'`,requestId,year,year,sectionId,u.id,itemNo,description,chemical,purpose,quantity,unit,declared,target,declared==='EXISTING'?'PENDING_REVIEW':'NOT_REQUIRED'));
+  statements.push(stmt(`INSERT INTO chemical_requests(id,running_number,running_year,running_sequence,section_id,requestor_id,item_no,item_description,chemical_name,purpose,request_quantity,unit,declared_type,status,store_review_status,revision,item_master_id,item_snapshot)
+   SELECT ?,printf('CR-%d-%06d',?,last_value),?,last_value,?,?,?,?,?,?,?,?,?,?,?,0,?,? FROM running_sequences WHERE sequence_key='chemical_request'`,requestId,year,year,sectionId,u.id,itemNo,description,chemical,purpose,quantity,unit,declared,target,declared==='EXISTING'?'PENDING_REVIEW':'NOT_REQUIRED',masterId,snapshot));
  }else{
   r=await getRequest(env,id,u);if(typeof b.revision!=='number'||!Number.isInteger(b.revision)||b.revision!==r.revision)fail(409,'This request changed. Refresh before trying again');
   if(closed(r))fail(409,'This request is already closed');let sets:string[]=[];let values:unknown[]=[];
@@ -161,6 +176,7 @@ async function masterRoute(req:Request,env:Env,u:User,url:URL,path:string):Promi
   const scope=url.searchParams.get('scope')||'';if(scope&&!['UNCONFIRMED','CHEMICAL','NON_CHEMICAL'].includes(scope))fail(400,'Invalid scope');
   const active=url.searchParams.get('active')||'';if(active&&!['0','1'].includes(active))fail(400,'Invalid active filter');
   const where:string[]=['1=1'],args:unknown[]=[];
+  const selectable=url.searchParams.get('selectable')||'';if(selectable&&!['0','1'].includes(selectable))fail(400,'Invalid selectable filter');if(selectable==='1')where.push("is_active=1 AND chemical_scope<>'NON_CHEMICAL'");
   if(q){where.push("(instr(lower(item_no),lower(?))>0 OR instr(lower(description),lower(?))>0 OR instr(lower(system_code),lower(?))>0)");args.push(q,q,q);}
   if(scope){where.push('chemical_scope=?');args.push(scope);}if(active){where.push('is_active=?');args.push(Number(active));}
   const sql=where.join(' AND ');
